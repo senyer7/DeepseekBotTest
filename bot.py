@@ -1,55 +1,70 @@
 import telebot
 import requests
 from datetime import datetime
+from flask import Flask
+import threading
+import os
+
+# Flask app для health checks
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+# Запуск Flask в отдельном потоке
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
+
+# Запускаем Flask в фоне
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
 
 TOKEN = "8534727094:AAE0Y_zNQTN2iUhsBn9tFtUF3M6qhdm3dPM"
 bot = telebot.TeleBot(TOKEN)
 DEEPSEEK_API_KEY = "sk-06d469e0b76e41929d9fb8081b188907"
 
-
 # Экономия токенов
-
-MAX_TOKENS = 200 #больше токенов больше ответ
+MAX_TOKENS = 200
 API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-#потом заменить на базу
+# Потом заменить на базу
 user_usage = {}
 
-#Проверка лимитов. Увеличивает кол-во исп. вопросов + 1
+# Проверка лимитов
 def check_daily_limit(user_id):
     """Проверка лимита запросов в день"""
     today = datetime.now().date().isoformat()
-
-    #Впервые зашел в бота
+    
     if user_id not in user_usage:
         user_usage[user_id] = {'date': today, 'count': 1}
         return True
-    #Если наступил след. день. сбросить лимит запросов
+    
     if user_usage[user_id]['date'] != today:
         user_usage[user_id] = {'date': today, 'count': 1}
         return True
-
-    #Если лимит исчерпан !!!!!!!
-    if user_usage[user_id]['count'] >= 15:  # Максимум 15 вопросов в день
+    
+    if user_usage[user_id]['count'] >= 15:
         return False
-
+    
     user_usage[user_id]['count'] += 1
     return True
 
-
-#Запрос к DeepSeek API с оптимизацией токенов
+# Запрос к DeepSeek API
 def askDeepseek(question):
-
-
-    # Обрезаем вопрос если слишком длинный
     if len(question) > 300:
         question = question[:300] + "..."
-
+    
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
     }
-
+    
     data = {
         "model": "deepseek-chat",
         "messages": [
@@ -62,75 +77,68 @@ def askDeepseek(question):
                 "content": question
             }
         ],
-        "max_tokens": MAX_TOKENS,  # Экономим токены
-        "temperature": 0.5,  # Уменьшил температуру для более предсказуемых ответов
+        "max_tokens": MAX_TOKENS,
+        "temperature": 0.5,
         "stream": False
     }
-
+    
     try:
         response = requests.post(API_URL, headers=headers, json=data, timeout=30)
-
+        
         if response.status_code == 200:
             result = response.json()
             return result['choices'][0]['message']['content'].strip()
         else:
             print(f"Ошибка API: {response.status_code}, {response.text}")
             return f"Ошибка: {response.status_code}. Попробуйте позже."
-
+    
     except requests.exceptions.Timeout:
         return "Время ожидания истекло. Попробуйте снова."
     except Exception as e:
         print(f"Ошибка в askDeepseek: {e}")
         return "Произошла ошибка при обработке запроса."
 
-
-
 @bot.message_handler(commands=['start'])
 def start(message):
-
-    welcome_text = ("Это бот-дипсик. Задай вопрос и получи краткий ответ."
+    welcome_text = ("Это бот-дипсик. Задай вопрос и получи краткий ответ. "
                     "Использу /ai и сразу после команды пиши вопрос")
     bot.send_message(message.chat.id, welcome_text)
 
-
 @bot.message_handler(commands=['ai'])
 def deepseekSearch(message):
-    """Обработчик команды /ai"""
     user_id = message.from_user.id
-
-    # Проверяем лимит
+    
     if not check_daily_limit(user_id):
         bot.send_message(
             message.chat.id,
-            "❌ Вы превысили дневной лимит в 10 вопросов. Попробуйте завтра!"
+            "❌ Вы превысили дневной лимит в 15 вопросов. Попробуйте завтра!"
         )
         return
-
-    # Получаем вопрос
+    
     user_question = message.text.replace("/ai", "").strip()
-
+    
     if not user_question:
         bot.send_message(
             message.chat.id,
             "Пожалуйста, напишите вопрос после команды /ai\nПример: /ai Что такое ИИ?"
         )
         return
-
-    # Отправляем статус "печатает"
+    
     bot.send_chat_action(message.chat.id, 'typing')
-
-    # Получаем ответ от DeepSeek
     deepseekAnswer = askDeepseek(user_question)
-
-    # Отправляем ответ
     bot.send_message(message.chat.id, deepseekAnswer)
 
+# Запускаем бота в отдельном потоке
+def run_bot():
+    bot.infinity_polling()
 
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
 
-# @bot.message_handler(commands=['stats'])
-
-
-bot.infinity_polling()
+# Главный поток просто ждет
+if __name__ == "__main__":
+    while True:
+        pass
 
 
 
